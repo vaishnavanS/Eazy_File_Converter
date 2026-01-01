@@ -1,5 +1,4 @@
 fastapi
-mangum
 python-multipart
 python-pptx
 Pillow
