@@ -2,7 +2,7 @@ fastapi
 python-multipart
 python-pptx
 Pillow
-PyMuPDF
+pymupdf
 python-dotenv
 # Windows-only for high-quality Office conversion
 comtypes; sys_platform == 'win32'
