@@ -1,36 +1,42 @@
 import os
 import uuid
 import shutil
+import logging
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, APIRouter
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from converter import FileConverter
 
-app = FastAPI()
-api_router = APIRouter(prefix="/api")
+# Configure logging to see errors in Vercel logs
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Enable CORS for frontend
+app = FastAPI()
+
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# For cloud platforms (Netlify/Vercel/Heroku), use /tmp for temporary storage
-IS_CLOUD = os.environ.get('NETLIFY') or os.environ.get('VERCEL')
+# Vercel-friendly storage (/tmp is the only writable directory)
+IS_CLOUD = os.environ.get('VERCEL') == '1'
 TMP_BASE = Path("/tmp") if IS_CLOUD else Path(".")
 
 UPLOAD_DIR = TMP_BASE / "uploads"
 DOWNLOAD_DIR = TMP_BASE / "downloads"
+
+# Ensure directories exist
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 converter = FileConverter(str(UPLOAD_DIR), str(DOWNLOAD_DIR))
 
-# In-memory task status storage
+# In-memory task status storage (Note: will not persist across serverless instances)
 tasks = {}
 
 def conversion_task(task_id: str, input_filename: str, target_format: str):
@@ -39,24 +45,31 @@ def conversion_task(task_id: str, input_filename: str, target_format: str):
         output_path = converter.process_conversion(input_filename, target_format)
         tasks[task_id]["status"] = "completed"
         tasks[task_id]["output_file"] = str(output_path.name)
+        logger.info(f"Task {task_id} completed successfully.")
     except Exception as e:
+        logger.error(f"Task {task_id} failed: {e}")
         tasks[task_id]["status"] = "failed"
         tasks[task_id]["error"] = str(e)
 
-@api_router.post("/upload")
+@app.post("/api/upload")
 async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...), target_format: str = "pdf"):
-    # File size limit (e.g., 10MB)
-    MAX_SIZE = 10 * 1024 * 1024
+    # Vercel Free Tier Payload Limit is 4.5MB
+    MAX_SIZE = 4 * 1024 * 1024 
     content = await file.read()
+    
     if len(content) > MAX_SIZE:
-        raise HTTPException(status_code=400, detail="File too large. Max 10MB.")
+        raise HTTPException(status_code=413, detail="File too large. Max 4MB on Vercel.")
     
     file_id = str(uuid.uuid4())
     input_filename = f"{file_id}_{file.filename}"
     input_path = UPLOAD_DIR / input_filename
     
-    with open(input_path, "wb") as f:
-        f.write(content)
+    try:
+        with open(input_path, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        logger.error(f"Failed to write file: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error during upload.")
     
     task_id = file_id
     tasks[task_id] = {
@@ -66,16 +79,16 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
     }
     
     background_tasks.add_task(conversion_task, task_id, input_filename, target_format)
-    
     return {"task_id": task_id}
 
-@api_router.get("/status/{task_id}")
+@app.get("/api/status/{task_id}")
 async def get_status(task_id: str):
     if task_id not in tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
+        # Fallback for serverless instance reset
+        return {"status": "failed", "error": "Task context lost due to serverless restart. Please try again."}
     return tasks[task_id]
 
-@api_router.get("/download/{task_id}")
+@app.get("/api/download/{task_id}")
 async def download_file(task_id: str, background_tasks: BackgroundTasks):
     if task_id not in tasks or tasks[task_id]["status"] != "completed":
         raise HTTPException(status_code=404, detail="File not ready or task not found")
@@ -86,31 +99,15 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
     
-    # Schedule cleanup after download
-    background_tasks.add_task(cleanup_files, task_id)
-    
     return FileResponse(path=file_path, filename=output_filename, media_type='application/octet-stream')
 
-def cleanup_files(task_id: str):
-    task = tasks.get(task_id)
-    if task:
-        input_path = UPLOAD_DIR / task["input_file"]
-        output_path = DOWNLOAD_DIR / task["output_file"]
-        
-        if input_path.exists():
-            input_path.unlink()
-        if output_path.exists():
-            output_path.unlink()
-
-@api_router.get("/health")
+@app.get("/api/health")
 async def health():
-    return {"status": "ok", "environment": "cloud" if IS_CLOUD else "local"}
-
-app.include_router(api_router)
+    return {"status": "ok", "platform": "vercel" if IS_CLOUD else "local"}
 
 @app.get("/")
 async def root():
-    return {"message": "EasyConverter API is running"}
+    return {"message": "EasyConverter API is live!"}
 
 if __name__ == "__main__":
     import uvicorn
