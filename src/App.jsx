@@ -159,7 +159,7 @@ function App() {
           <div className="status-panel">
             <CheckCircle className="upload-icon" style={{ color: 'var(--success)' }} size={48} />
             <h3>Conversion Complete!</h3>
-            <p className="status-message" style={{ marginBottom: '24px' }}>Your file is ready for download.</p>
+            <p className="status-message" style={{ marginBottom: '24px' }}>Your file is ready for download!.</p>
 
             <a href={downloadUrl} className="download-btn" target="_blank" rel="noopener noreferrer">
               <Download size={20} />
