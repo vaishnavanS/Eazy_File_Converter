@@ -1,5 +1,6 @@
 import os
 import uuid
+from typing import List
 import sys
 import traceback
 import logging
@@ -76,10 +77,30 @@ class FileConverter:
                     prs.save(output_path)
                     doc.close()
                     return output_path
-
             raise ValueError(f"Conversion from {input_ext} to {target_format} is not supported on cloud. Try Image or PDF files!")
         except Exception as e:
             logger.error(f"Conversion Error: {e}")
+            raise e
+
+    def process_multi_conversion(self, input_filenames, target_format):
+        if target_format.lower() != "pdf":
+            raise ValueError("Multiple files can only be merged into a PDF")
+
+        output_filename = f"merged_{uuid.uuid4().hex}.pdf"
+        output_path = self.download_dir / output_filename
+        
+        images = []
+        try:
+            for filename in input_filenames:
+                file_path = self.upload_dir / filename
+                img = Image.open(file_path).convert("RGB")
+                images.append(img)
+            
+            if images:
+                images[0].save(output_path, "PDF", save_all=True, append_images=images[1:])
+            return output_path
+        except Exception as e:
+            logger.error(f"Multi-Conversion Error: {e}")
             raise e
 
 # --- VERCEL FASTAPI APP ---
@@ -117,30 +138,43 @@ async def global_exception_handler(request, exc):
 
 @app.post("/api/upload")
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...), target_format: str = "pdf"):
-    # Enforce Vercel Hobby 4MB limit
-    content = await file.read()
-    if len(content) > 4 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large (Max 4MB on Vercel Free Plan)")
+async def upload_file(files: List[UploadFile] = File(...), target_format: str = "pdf"):
+    # Enforce Vercel Hobby 4MB total limit
+    total_size = 0
+    contents = []
     
-    file_id = str(uuid.uuid4())
-    input_filename = f"{file_id}_{file.filename}"
-    input_path = UPLOAD_DIR / input_filename
+    for file in files:
+        content = await file.read()
+        total_size += len(content)
+        contents.append(content)
+        
+    if total_size > 4 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Total size too large (Max 4MB on Vercel Free Plan)")
     
-    with open(input_path, "wb") as f:
-        f.write(content)
+    task_id = str(uuid.uuid4())
+    input_filenames = []
     
-    # Process conversion immediately for higher reliability on Vercel
+    for i, file in enumerate(files):
+        unique_name = f"{task_id}_{i}_{file.filename}"
+        input_path = UPLOAD_DIR / unique_name
+        with open(input_path, "wb") as f:
+            f.write(contents[i])
+        input_filenames.append(unique_name)
+    
     try:
-        output_path = converter.process_conversion(input_filename, target_format)
-        tasks[file_id] = {
+        if len(input_filenames) > 1:
+            output_path = converter.process_multi_conversion(input_filenames, target_format)
+        else:
+            output_path = converter.process_conversion(input_filenames[0], target_format)
+            
+        tasks[task_id] = {
             "status": "completed",
             "output_file": output_path.name,
             "target_format": target_format
         }
-        return {"task_id": file_id, "status": "completed"}
+        return {"task_id": task_id, "status": "completed"}
     except Exception as e:
-        tasks[file_id] = {"status": "failed", "error": str(e)}
+        tasks[task_id] = {"status": "failed", "error": str(e)}
         return JSONResponse(status_code=500, content={"error": "Conversion failed", "detail": str(e)})
 
 @app.get("/api/status/{task_id}")
