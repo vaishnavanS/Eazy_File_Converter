@@ -29,6 +29,12 @@ function App() {
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0]
     if (selectedFile) {
+      if (selectedFile.size > 4 * 1024 * 1024) {
+        setError('File is too large! limit is 4MB.')
+        setFile(null)
+        e.target.value = null // Reset input
+        return
+      }
       setFile(selectedFile)
       setTargetFormat('')
       setError(null)
@@ -116,7 +122,7 @@ function App() {
               />
               <Upload className="upload-icon" size={48} />
               <h3>{file ? file.name : 'Select or drop a file'}</h3>
-              <p style={{ marginTop: '8px', color: '#94a3b8' }}>PDF, DOCX, PPTX, Images (Max 10MB)</p>
+              <p style={{ marginTop: '8px', color: '#94a3b8' }}>PDF, DOCX, PPTX, Images (Max 4MB)</p>
             </div>
 
             {file && (
@@ -159,7 +165,7 @@ function App() {
           <div className="status-panel">
             <CheckCircle className="upload-icon" style={{ color: 'var(--success)' }} size={48} />
             <h3>Conversion Complete!</h3>
-            <p className="status-message" style={{ marginBottom: '24px' }}>Your file is ready for download!.</p>
+            <p className="status-message" style={{ marginBottom: '24px' }}>Your file is ready for download.</p>
 
             <a href={downloadUrl} className="download-btn" target="_blank" rel="noopener noreferrer">
               <Download size={20} />
